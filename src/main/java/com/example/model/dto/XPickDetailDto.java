@@ -1,11 +1,13 @@
-package com.example.first.model.dto;
+package com.example.model.dto;
 
-import lombok.*;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.Setter;
 
 @Getter
 @Setter
 @Builder
-public class PickDetailDto {
+public class XPickDetailDto {
 
     private String storer;
     private String sku;
@@ -15,8 +17,5 @@ public class PickDetailDto {
     private String consigneeKey;
     private String uom;
     private double qty;
-    private String headerDoor;
-    private String toLoc;
-    private String loc;
 
 }

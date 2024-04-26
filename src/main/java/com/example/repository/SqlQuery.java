@@ -1,4 +1,4 @@
-package com.example.first.repository;
+package com.example.repository;
 
 public class SqlQuery {
 

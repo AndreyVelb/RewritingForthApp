@@ -1,10 +1,9 @@
-package com.example.first.repository;
+package com.example.repository;
 
-import com.example.first.model.dto.CustomerAndDoorDto;
-import com.example.first.model.dto.MaxLocDto;
-import com.example.first.model.dto.PickDetailDto;
+import com.example.model.dto.CustomerAndDoorDto;
+import com.example.model.dto.MaxLocDto;
+import com.example.model.dto.PickDetailDto;
 
-import java.util.List;
 import java.util.Optional;
 
 public class PickDetailRepositoryMock {

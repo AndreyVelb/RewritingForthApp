@@ -1,6 +1,6 @@
-package com.example.first.repository;
+package com.example.repository;
 
-import com.example.first.model.dto.XPickDetailDto;
+import com.example.model.dto.XPickDetailDto;
 
 import java.util.Optional;
 

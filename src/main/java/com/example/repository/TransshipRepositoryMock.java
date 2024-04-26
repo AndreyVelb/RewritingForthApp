@@ -1,8 +1,7 @@
-package com.example.first.repository;
+package com.example.repository;
 
-import com.example.first.model.dto.TransshipDto;
+import com.example.model.dto.TransshipDto;
 
-import java.util.List;
 import java.util.Optional;
 
 public class TransshipRepositoryMock {

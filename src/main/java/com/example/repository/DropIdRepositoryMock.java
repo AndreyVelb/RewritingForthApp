@@ -1,6 +1,6 @@
-package com.example.first.repository;
+package com.example.repository;
 
-import com.example.first.model.entity.DropIdInfo;
+import com.example.model.entity.DropIdInfo;
 
 import java.util.List;
 

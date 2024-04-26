@@ -1,6 +1,6 @@
-package com.example.first.repository;
+package com.example.repository;
 
-import com.example.first.model.dto.TaskDetailDto;
+import com.example.model.dto.TaskDetailDto;
 
 import java.util.Optional;
 
