@@ -1,0 +1,575 @@
+------------------------------------------------------------
+method RFMoveFlowThroughQP1S1.DropIDCheck(input pObject: Framework.Object,
+    input output theDO: BaseObjects.EXEDataObject): Framework.TextData
+begin
+/*****************************************************************
+** 18-DEC-2000 SLT: Pick and Drop.
+** 19-DEC-2000 SLT: Attempt to find FromLoc as last picked loc.
+* 08/01/2001  SMP   RF Stored Procedure CleanUp
+* 09/17/2001 JJLJR  Internationalization of messages
+******************************************************************/
+ 
+theContext   : Context = (Context)(pObject);
+theCurrentDO : EXEDataObject = (EXEDataObject)(theContext.theEXEDataObjectStack.StackList[1]);
+ 
+theDO.ClearDO();
+theDO.SetRow(theDO.CreateRow());
+theDO.SetReturnCode(1);
+ 
+//use this function to find out whether information passed in was
+//from a dropid and what the other information was for that
+ 
+rowcount : integer;
+DropidObject : array of dropidinfo = new;
+Storer, Sku, DESCR, lotnum, ID, INid, ConsigneeKey, fromloc, UOM : string;
+Qty : Double;
+lanes : array of xlanerow = new;
+lane : string;
+taskid          : IntegerData = new;
+taskidnumber    : RandomNumber = new;
+status : string;
+HeaderDoor  : String = ' ';         // 18-DEC-00 SLT: Fall back if no Lane for Shipment Order found.
+ToLoc       : String = ' ';         // 18-DEC-00 SLT:
+ 
+CaseIDRowCount : Integer = 0;
+CaseID         : String = ' ';
+ 
+taskid.SetValue(taskidnumber.Get());
+theCurrentDO.GetString('movableunit', INid);
+ 
+//select a count(*) into an object to see if there is a row for the entered information
+SQL Select Count(*) into :rowcount
+                    from dropid
+                    where :INid = dropid.dropid
+                    On Session theContext.theSQLMgr.thisSession;
+                     
+// see if it found the rows
+IF (RowCount = 0) Then
+    /*
+    ** 19-DEC-00 SLT: Didn't find a DropID, how about a non-shipped CaseID?
+    */
+    SQL SELECT COUNT(1) INTO :CaseIDRowcount
+    FROM PICKDETAIL WHERE CaseID = :INid AND STATUS < '9'
+                    On Session theContext.theSQLMgr.ThisSession;
+     
+    IF CaseIDrowcount = 0 THEN
+        return 'NODROPID';
+    END IF;
+End if;
+ 
+/* Are we dealing with a CaseID? */
+IF (Rowcount = 0) AND (CaseIDRowCount > 0) THEN
+ 
+    /*
+    ** If just one PICK for the CaseID (eg. pallet pick), then just retrieve the
+    ** details.
+    */
+    IF CaseIDRowCount = 1 THEN
+        Loc : String = ' ';
+         
+        RowCount = (SQL Select pickdetail.sku,
+                    SKU.DESCR,
+                    pickdetail.storerkey,
+                    pickdetail.lot,
+                    pickdetail.qty,
+                    pickdetail.id,
+                    pickdetail.loc,
+                    pickdetail.toloc,
+                    orders.consigneekey,
+                    orders.door,
+                    pickdetail.UOM
+                    into
+                    :Sku,
+                    :DESCR,
+                    :Storer,
+                    :lotnum,
+                    :Qty,
+                    :ID,
+                    :Loc,
+                    :ToLoc,
+                    :ConsigneeKey,
+                    :HeaderDoor,
+                    :UOM
+                    FROM    PICKDETAIL, ORDERS, SKU
+                    WHERE   PICKDETAIL.StorerKey = SKU.StorerKey
+                    AND     PICKDETAIL.SKU = SKU.SKU       
+                    AND     PICKDETAIL.CaseID = :INId
+                    AND     PICKDETAIL.OrderKey = ORDERS.OrderKey
+                    On Session theContext.theSQLMgr.ThisSession);
+                     
+        /* If we haven't moved this Pick yet, set fromloc = PickLoc. */
+        IF ToLoc = ' ' OR ToLoc = '' THEN
+            ToLoc = Loc;
+        END IF;
+ 
+        fromloc = ToLoc;
+ 
+    /*
+    ** If we have more than one PICK for the CaseID, we need to get a little more involved.
+    */
+    ELSEIF CaseIDRowCount > 1 THEN
+        MaxFromLoc, ToLoc : TextNullable = new;
+         
+        SQL SELECT MAX(ToLoc), MAX(Loc) INTO :ToLoc, :MaxFromLoc
+            FROM PICKDETAIL
+            WHERE CaseID = :InID
+            AND   Status < '9'
+            On Session theContext.theSQLMgr.ThisSession;
+         
+        IF MaxFromLoc.IsNull THEN
+            MaxFromLoc.Value = ' ';
+        END IF;
+         
+        IF ToLoc.IsEqual(' ') OR ToLoc.IsEqual('') OR ToLoc.IsNull THEN
+            ToLoc.Value = MaxFromLoc.Value;
+        END IF;
+ 
+        FromLoc = ToLoc.Value;
+ 
+        /* Retrieve Customer and Door fields from header - used later to find lane */
+        SQL SELECT DISTINCT ORDERS.ConsigneeKey, ORDERS.Door INTO :ConsigneeKey, :HeaderDoor
+            FROM Orders, PICKDETAIL
+            WHERE PICKDETAIL.CaseID = :InID
+            AND   PICKDETAIL.OrderKey = Orders.OrderKey
+            On Session theContext.theSQLMgr.ThisSession;
+ 
+    END IF;
+ 
+ELSE
+ 
+    /*
+    ** Okay, we are dealing with a DropID
+    */
+    SQL Select status into :status
+                        from dropid
+                        where :INid = dropid.dropid
+                        On Session theContext.theSQLMgr.thisSession;
+     
+    IF (status = '9') Then
+        RAISE FulfillLogicException().Setup ( pSeverity = SP_ER_USER,
+                                     pReasonCode = EF_LE_INVALIDDATA,
+                                     pSetNumber = EF_MS_COMMON,
+                                     pMsgNumber = 102,
+                                     pDefaultMsg = NX('Drop %1 is shipped' ),
+                                     pParam1 = TextData(Value=INid));
+        //return 'Container is Shipped';
+    End IF;
+     
+    /*
+    ** 19-DEC-00 SLT: Start with the last used detail (ie. the 'ORDER BY').
+    */
+    SQL Select dropiddetail.Dropid,
+               dropiddetail.Childid,
+               dropiddetail.IDType,
+               dropid.droploc
+               Into :DropidObject
+               From dropiddetail, dropid
+               where :INid = dropiddetail.dropid AND
+               dropiddetail.dropid = dropid.dropid
+               ORDER BY DropIDDetail.EditDate DESC
+               On Session theContext.theSQLMgr.ThisSession;    
+                
+    RowCount = 0;
+     
+    For item in DropidObject do
+         
+        If(item.IDType = '1') then
+            TmpFromLoc  : String = ' ';
+ 
+            /* 19-DEC-00 SLT:
+            **      Find out how many PICKDETAIL records for this CaseID.
+            **      - Would previously fail if a situation in which multiple picks for CaseID - ie. 1+ rows retrieved for a singleton SELECT.
+            */
+            SQL SELECT COUNT(1) INTO :CaseIDRowcount
+            FROM PICKDETAIL WHERE CaseID = :Item.ChildID AND STATUS < '9'
+                            On Session theContext.theSQLMgr.ThisSession;
+ 
+            /*
+            ** If just one PICK for the CaseID (eg. pallet pick, non-cartonized pick), then just retrieve all the
+            ** details.
+            */
+            IF CaseIDRowCount = 1 THEN
+                Loc : String = ' ';
+                 
+                RowCount = (SQL Select pickdetail.sku,
+                            SKU.DESCR,
+                            pickdetail.storerkey,
+                            pickdetail.lot,
+                            pickdetail.qty,
+                            pickdetail.id,
+                            pickdetail.loc,
+                            pickdetail.toloc,
+                            orders.consigneekey,
+                            orders.door,
+                            pickdetail.UOM
+                            into
+                            :Sku,
+                            :DESCR,
+                            :Storer,
+                            :lotnum,
+                            :Qty,
+                            :ID,
+                            :Loc,
+                            :ToLoc,
+                            :ConsigneeKey,
+                            :HeaderDoor,
+                            :UOM
+                            FROM    PICKDETAIL, ORDERS, SKU
+                            WHERE   PICKDETAIL.StorerKey = SKU.StorerKey
+                            AND     PICKDETAIL.SKU = SKU.SKU
+                            AND     PICKDETAIL.CaseID = :Item.ChildID
+                            AND     PICKDETAIL.OrderKey = ORDERS.OrderKey
+                            On Session theContext.theSQLMgr.ThisSession);
+                             
+                /* If we haven't moved this Pick yet, set fromloc = PickLoc. */
+                IF item.DropLoc = ' ' OR item.DropLoc = '' THEN
+                    FromLoc = Loc;
+                ELSE
+                    FromLoc = item.DropLoc;
+                END IF;
+ 
+            /*
+            ** If we have more than one PICK for the CaseID, we need to get a little more involved.
+            */
+            ELSEIF CaseIDRowCount > 1 THEN
+                MaxFromLoc, ToLoc : TextNullable = new;
+                 
+                SQL SELECT MAX(ToLoc), MAX(Loc) INTO :ToLoc, :MaxFromLoc
+                    FROM PICKDETAIL
+                    WHERE CaseID = :Item.ChildID
+                    AND   Status < '9'
+                    On Session theContext.theSQLMgr.ThisSession;
+                 
+                IF MaxFromLoc.IsNull THEN
+                    MaxFromLoc.Value = ' ';
+                END IF;
+                 
+                IF item.DropLoc = ' ' OR item.DropLoc = '' THEN
+                    FromLoc = MaxFromLoc.Value;
+                ELSE
+                    FromLoc = item.DropLoc;
+                END IF;
+             
+                /* Retrieve Customer and Door fields from header - used later to find lane */
+                SQL SELECT DISTINCT ORDERS.ConsigneeKey, ORDERS.Door INTO :ConsigneeKey, :HeaderDoor
+                    FROM Orders, PICKDETAIL
+                    WHERE PICKDETAIL.CaseID = :Item.ChildID
+                    AND   PICKDETAIL.OrderKey = Orders.OrderKey
+                    On Session theContext.theSQLMgr.ThisSession;
+         
+            END IF;
+                 
+        ElseIF(item.IDType = '2') then
+            RowCount = (SQL Select xpickdetail.sku,
+                        SKU.DESCR,
+                        xpickdetail.storerkey,
+                        xpickdetail.lot,
+                        xpickdetail.qty,
+                        xpickdetail.id,
+                        xorders.consigneekey,
+                        xpickdetail.UOM
+                        into
+                        :Sku,
+                        :DESCR,
+                        :Storer,
+                        :lotnum,
+                        :Qty,
+                        :ID,
+                        :ConsigneeKey,
+                        :UOM
+                        From xpickdetail, xorders, SKU
+                        WHERE   xpickdetail.StorerKey = SKU.StorerKey
+                        AND     xpickdetail.SKU = SKU.SKU
+                        and :Item.ChildID = xpickdetail.caseid AND
+                        xpickdetail.orderkey = xorders.orderkey
+                        On Session theContext.theSQLMgr.ThisSession);
+                         
+                        fromloc = item.DropLoc;
+                         
+        ElseIF(item.IDType = '3') then
+            RowCount = (SQl Select CustomerKey,
+                        Qty
+                        INTO :ConsigneeKey,
+                             :Qty
+                        from Transship
+                        Where :item.Childid = Transship.ContainerID
+                        On Session theContext.theSQLMgr.ThisSession);
+                         
+                        fromloc = item.DropLoc;
+                         
+        ElseIF(item.IDType = '4') then
+        //there should be no dropid's be
+        END IF;
+     
+    If(Rowcount > 0 )then
+     exit;
+    END IF;
+     
+    end for;
+     
+END IF;
+ 
+//then get info for the dropid and find out any outbound lanes for a customer to find out where to move it to
+//gettting the outbound lanes
+rowcount = 0;
+            SQL Select lane.lanekey
+            Into :lanes
+            from lane
+            where :consigneekey = lane.laneassg1 AND
+            Lane.Lanetype in ('2')
+            On Session theContext.theSQLMgr.ThisSession;
+ 
+/* 18-DEC-00 SLT:
+**      If no Lane found, try and use the Door from the shipment order header.
+**      Otherwise, fail as before.
+*/
+ 
+if(lanes.items = 0) then
+    theLog : EXELog;
+    theLog = (EXELog) (task.GetAppContext( EXELog.EF_LOG ));
+ 
+    IF HeaderDoor = ' ' OR HeaderDoor = ''
+    THEN
+        theLog.PutLine( SP_MT_DEBUG, SP_ST_USER2, pGroup = EF_LG_RF, pLevel = 1,
+            pSetNumber = EF_MS_RF,
+            pMsgNumber = 200,
+            pDefaultMsg = NX( 'Did not find Lane.'));
+ 
+        RAISE FulfillLogicException().Setup ( pSeverity = SP_ER_USER,
+                                     pReasonCode = EF_LE_INVALIDDATA,
+                                     pSetNumber = EF_MS_RF,
+                                     pMsgNumber = 55,
+                                     pDefaultMsg = NX('No Outbound Lanes Assigned' ) );
+     
+    ELSE
+        theLog.PutLine( SP_MT_DEBUG, SP_ST_USER2, pGroup = EF_LG_RF, pLevel = 255,
+            pSetNumber = EF_MS_RF,
+            pMsgNumber = 646,
+            pDefaultMsg = NX( 'Did not find Lane - using door from shipment order.'));
+             
+        toloc = HeaderDoor;             // 18-DEC-00 SLT: Since we have no Lane, lets use the Door as the ToLoc
+    END IF;
+ELSE
+    toloc = (lanes[1].lanekey).value;   // 18-DEC-00 SLT: Lets use the Lane as the ToLoc
+End IF;
+ 
+//  lane = (lanes[1].lanekey).value;
+ 
+/* 18-DEC-2000 SLT: Pick and Drop
+**  Find the pick and drop location between the current from location, and the final location (Lane).
+**
+**  Note: If FromLoc/ToLoc not a valid Location, then GetPickandDropLoc method returns pToLoc passed.
+*/
+PnDToLoc : TextData;
+PnDToLoc = SELF.GetPickAndDropLoc(FromLoc, ToLoc, theContext.theSQLMgr.thisSession);
+toloc = PnDToLoc.Value;
+ 
+TempFieldText : TextData = new;
+TempFieldText.SetValue(ID);
+theDO.SetAttribValue('caseid', TempFieldText);
+TempFieldText.SetValue(storer);
+theDO.SetAttribValue('storer', TempFieldText);
+TempFieldText.SetValue(lotnum);
+theDO.SetAttribValue('lotnum', TempFieldText);
+TempFieldText.SetValue(sku);
+theDO.SetAttribValue('sku', TempFieldText);
+TempFieldText.SetValue(DESCR);
+theDO.SetAttribValue('DESCR', TempFieldText);
+theDO.SetAttribValue('fromtag', TextData('0'));
+TempFieldText.SetValue(fromloc);
+theDO.SetAttribValue('fromloc', TempFieldText);
+theDO.SetAttribValue('totag', TextData('0'));
+TempFieldText.SetValue(toloc);
+theDO.SetAttribValue('toloc', TempFieldText);
+TempFieldText.SetValue(qty);
+theDO.SetAttribValue('qty', TempFieldText);
+TempFieldText.SetValue(uom);
+theDO.SetAttribValue('uom', TempFieldText);
+ 
+return 'Everything OK';
+end method;
+ 
+------------------------------------------------------------
+method RFMoveFlowThroughQP1S1.Init
+begin
+super.Init();
+self.theOutDO = new;
+end method;
+ 
+------------------------------------------------------------
+method RFMoveFlowThroughQP1S1.ProcessStep(input pObject: Framework.Object): Framework.Object
+begin
+/******************************************************************
+* Programmer:   Steven Cherry                           
+* Created   :   12/09/98                                         
+* Purpose   :   Retrieve MOVE Info for flowthrough moves on the RF                          
+*******************************************************************
+* Modification History
+* 12/09/98    SMC    Cloned for cross dock
+* 18-DEC-2000 SLT    Pick and Drop.
+*
+* 08/01/2001  SMP   RF Stored Procedure CleanUp
+* 09/17/2001 JJLJR  Internationalization of messages
+******************************************************************/
+ 
+theLog : EXELog;
+theLog = (EXELog) (task.GetAppContext( EXELog.EF_LOG ));
+ 
+theLog.PutLine( SP_MT_DEBUG, SP_ST_USER2, pGroup = EF_LG_RF, pLevel = 255,
+    pSetNumber = EF_MS_RF,
+    pMsgNumber = 647,
+    pDefaultMsg = NX( 'Entering FlowThrough move query.'));
+ 
+theContext   : Context = (Context)(pObject);
+theCurrentDO : EXEDataObject = (EXEDataObject)(theContext.theEXEDataObjectStack.StackList[1]);
+theDO    : EXEDataObject = new();
+ 
+//Get the next task id
+taskid          : IntegerData = new;
+taskidnumber    : RandomNumber = new;
+ 
+taskid.SetValue(taskidnumber.Get());
+ 
+movableunit : string;
+caseid      : string;
+storer      : string;
+lotnum      : string;
+sku         : string;
+DESCR       : string;
+fromtag     : string;
+fromloc     : string;
+totag       : string;
+toloc       : string;
+toqty       : Double;
+uom         : string;
+packkey     : string;
+refnum      : string;
+CheckString       : Textdata = new;
+ 
+movlogkey   : string;  
+userid      : string;
+movlog      : X5MakeMovementLog = new;
+           
+ 
+theLog.PutLine( SP_MT_DEBUG, SP_ST_USER2, pGroup = EF_LG_RF, pLevel = 255,
+    pSetNumber = EF_MS_RF,
+    pMsgNumber = 648,
+    pDefaultMsg = NX( 'Getting data off of the stack.'));
+ 
+theCurrentDO.GetString('movableunit', movableunit);
+ 
+theLog.PutLine( SP_MT_DEBUG, SP_ST_USER2, pGroup = EF_LG_RF, pLevel = 255,
+    pSetNumber = EF_MS_RF,
+    pMsgNumber = 649,
+    pDefaultMsg = NX( 'Running lookup on move: %1.'),
+    pParam1 = TextData ( value = movableunit ));
+ 
+// =BEGIN= V.38.4  EKzhr, 19.09.2014
+//Защита от фиктивных размещений
+cps : X5CheckPainShip = new;
+cps.CheckPainShip(theContext,movableunit);
+ 
+// =END= V.38.1  EKzhr, 19.09.2014
+  
+ 
+ 
+CheckString = Self.DropIDCheck(pObject = pObject, theDO = Self.theOutDO);
+ 
+IF NOT(CheckString.isequal('NODROPID',TRUE)) THEN
+    theOutDO.GetString('ToID', totag);
+    theOutDO.GetString('fromloc', fromloc);
+    theOutDO.GetString('toloc', toloc);
+    theCurrentDo.getstring('userid', userid);
+     
+    movlog.StartLog(theContext, movableunit, 'MV', fromloc, toloc, '', userid, movlogkey, '');
+     
+    theOutDO.SetAttribValue('packkey', '');
+    theOutDO.SetAttribValue('refnum', ''); 
+    theOutDO.SetAttribValue('MOVLOGKEY', MOVLOGKEY);
+    theContext.theEXEDataObjectStack.Push(theOutDO);
+    RETURN theContext;
+END IF;
+ 
+theSQLStmt : string = 'SELECT TaskDetail.CaseID, TaskDetail.StorerKey, TaskDetail.Sku, SKU.DESCR, TaskDetail.Lot, TaskDetail.FromID, TaskDetail.FromLoc, TaskDetail.ToID, TaskDetail.toloc, TaskDetail.qty, TaskDetail.UOM \
+                       FROM TaskDetail, SKU \
+                       WHERE TaskDetail.StorerKey = SKU.StorerKey \
+                       AND TaskDetail.SKU = SKU.SKU \
+                       AND ToID = :movableunit \
+                       AND Status = ''0'' \
+                       AND TaskType = ''MV''';                     
+theDO.SetConstraintItem('movableunit',TextData(movableunit));
+theDO.SetSQL(theSQLStmt);
+ 
+theContext.theSQLMgr.ExecuteSQLStatement(theDO);
+ 
+IF (theDO.ResultRowCount = 0) THEN
+    RAISE FulfillLogicException().Setup ( pSeverity = SP_ER_USER,
+                                     pReasonCode = EF_LE_INVALIDDATA,
+                                     pSetNumber = EF_MS_RF,
+                                     pMsgNumber = 56,
+                                     pDefaultMsg = NX('No Move Task' ) );
+ELSE
+ 
+    theLog.PutLine( SP_MT_DEBUG, SP_ST_USER2, pGroup = EF_LG_RF, pLevel = 255,
+        pSetNumber = EF_MS_RF,
+        pMsgNumber = 650,
+        pDefaultMsg = NX( 'Move Flow Through Found task.'));
+     
+    theDO.GetString('CaseID', caseid);
+    theDO.GetString('StorerKey', storer);
+    theDO.GetString('Sku', sku);
+    theDO.GetString('DESCR', DESCR);
+    theDO.GetString('Lot', lotnum);
+    theDO.GetString('FromID', fromtag);
+    theDO.GetString('ToID', totag);
+    theDO.GetDouble('Qty', toqty);
+    theDO.GetString('UOM', uom);
+    theDO.GetString('fromloc', fromloc);
+    theDO.GetString('toloc', toloc);
+    packkey = ' ';
+    refnum = ' ';
+ 
+    /* 18-DEC-2000 SLT: Get the Pick and Drop location for display */
+    PnDToLoc : TextData;
+    PnDToLoc = SELF.GetPickAndDropLoc(FromLoc, ToLoc, theContext.theSQLMgr.thisSession);
+    toloc=PnDToLoc.Value;
+ 
+END IF;
+ 
+IF theCurrentDO.IsState(STATE_LOGICAL_ERROR) THEN
+    lErrDesc : errorDesc;
+    lErrDesc = TASK.ErrorMgr.getAt ( 1 );
+    IF (lErrDesc != NIL) THEN  
+        RAISE lErrDesc;
+    END IF;
+END IF;
+ 
+ 
+// =BEGIN= V.35 KDV 06.02.2014
+movlog.StartLog(theContext, movableunit, 'MV', fromloc, toloc, '', userid, movlogkey, '');
+// =END= V.35 KDV 06.02.2014
+ 
+ 
+theOutDO.ClearDO();
+theOutDO.SetRow(theOutDO.CreateRow());
+theOutDO.SetReturnCode(1);
+ 
+theOutDO.SetAttribValue('caseid', (textdata) (value = caseid));
+theOutDO.SetAttribValue('storer', (textdata) (value = storer));
+theOutDO.SetAttribValue('lotnum', (textdata) (value = lotnum));
+theOutDO.SetAttribValue('sku', (textdata) (value = sku));
+theOutDO.SetAttribValue('DESCR', (textdata) (value = DESCR));
+theOutDO.SetAttribValue('fromtag', (textdata) (value = fromtag));
+theOutDO.SetAttribValue('fromloc', (textdata) (value = fromloc));
+theOutDO.SetAttribValue('totag', (textdata) (value = totag));
+theOutDO.SetAttribValue('toloc', (textdata) (value = toloc));  
+theOutDO.SetAttribValue('qty', (Doubledata) (value = toqty));
+theOutDO.SetAttribValue('uom', (textdata) (value = uom));
+theOutDO.SetAttribValue('packkey', (textdata) (value = packkey));
+theOutDO.SetAttribValue('refnum', (textdata) (value = refnum));
+ 
+theOutDO.SetAttribValue('MOVLOGKEY', MOVLOGKEY);
+ 
+theContext.theEXEDataObjectStack.Push(theOutDO);
+RETURN theContext;
+end method;
