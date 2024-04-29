@@ -72,11 +72,21 @@ public class SqlQuery {
 
     public static final String SELECT_DROPID_STATUS_BY_DROPID = "SELECT status FROM dropid WHERE :INid = dropid.dropid";
 
-    public static final String SELECT_TASK_DETAILS_BY_TO_ID_STATUS_0_MV = "SELECT TaskDetail.CaseID, TaskDetail.StorerKey, TaskDetail.Sku, SKU.descr, TaskDetail.Lot, TaskDetail.FromID, TaskDetail.FromLoc, TaskDetail.ToID, TaskDetail.toloc, TaskDetail.qty, TaskDetail.UOM " +
-            "FROM TaskDetail, SKU " +
-            "WHERE TaskDetail.StorerKey = SKU.StorerKey " +
-            "AND TaskDetail.SKU = SKU.SKU " +
-            "AND ToID = :movableUnit " +
-            "AND Status = ''0'' " +
-            "AND TaskType = ''MV'''";
+    public static final String SELECT_TASK_DETAILS_BY_TO_ID_STATUS_0_MV =
+            "SELECT TaskDetail.CaseID, " +
+                    "TaskDetail.StorerKey, " +
+                    "TaskDetail.Sku, SKU.descr, " +
+                    "TaskDetail.Lot, " +
+                    "TaskDetail.FromID, " +
+                    "TaskDetail.FromLoc, " +
+                    "TaskDetail.ToID, " +
+                    "TaskDetail.toloc, " +
+                    "TaskDetail.qty, " +
+                    "TaskDetail.UOM " +
+                    "FROM TaskDetail, SKU " +
+                    "WHERE TaskDetail.StorerKey = SKU.StorerKey " +
+                    "AND TaskDetail.SKU = SKU.SKU " +
+                    "AND ToID = :movableUnit " +
+                    "AND Status = ''0'' " +
+                    "AND TaskType = ''MV'''";
 }

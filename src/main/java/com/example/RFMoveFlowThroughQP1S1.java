@@ -11,6 +11,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class RFMoveFlowThroughQP1S1 {
 
@@ -41,7 +43,7 @@ public class RFMoveFlowThroughQP1S1 {
         List<XLaneRow> lanes;
         int taskId = (int) (Math.random() * 10) + 5;
 
-        CustomerAndDoorDto customerAndDoorDto = CustomerAndDoorDto.builder().build();
+        final CustomerAndDoorDto customerAndDoorDto = CustomerAndDoorDto.builder().build();
 
         int caseIdRowCount = 0;
 
@@ -66,21 +68,19 @@ public class RFMoveFlowThroughQP1S1 {
             //If just one PICK for the CaseID (eg. pallet pick), then just retrieve the details
 
             if (caseIdRowCount == 1) {
-                String loc = " ";
+                AtomicReference<String> loc = new AtomicReference<>(" ");
 
                 Optional<PickDetailDto> optionalOfPickDetailDto = pickDetailRepositoryMock.getAllPickDetails(INid);
-                if (optionalOfPickDetailDto.isPresent()) {
-                    PickDetailDto pickDetailDto = optionalOfPickDetailDto.get();
+                optionalOfPickDetailDto.ifPresent(pickDetailDto -> {
                     updateResult(result, pickDetailDto);
                     customerAndDoorDto.setConsigneeKey(pickDetailDto.getConsigneeKey());
                     customerAndDoorDto.setHeaderDoor(pickDetailDto.getHeaderDoor());
-                    loc = pickDetailDto.getLoc();
-                }
+                    loc.set(pickDetailDto.getLoc());
+                });
 
                 // If we haven't moved this Pick yet, set fromloc = PickLoc
-                if (loc.isBlank()) {
-                    result.setToLoc(loc);
-                }
+                if (loc.get().isBlank()) result.setToLoc(loc.get());
+
                 result.setFromLoc(result.getToLoc());
 
                 //If we have more than one PICK for the CaseID, we need to get a little more involved
@@ -88,18 +88,17 @@ public class RFMoveFlowThroughQP1S1 {
 
                 MaxLocDto maxLocDto = pickDetailRepositoryMock.getMaxLocDto();
 
-                if (maxLocDto.getMaxFromLoc().isEmpty()) {
-                    maxLocDto.setMaxFromLoc(" ");
-                }
+                if (maxLocDto.getMaxFromLoc().isEmpty()) maxLocDto.setMaxFromLoc(" ");
 
-                if (maxLocDto.getToLoc().isBlank()) {
-                    maxLocDto.setToLoc(maxLocDto.getMaxFromLoc());
-                }
+                if (maxLocDto.getToLoc().isBlank()) maxLocDto.setToLoc(maxLocDto.getMaxFromLoc());
+
                 result.setToLoc(maxLocDto.getToLoc());
                 result.setFromLoc(maxLocDto.getToLoc());
 
                 // Retrieve Customer and Door fields from header - used later to find lane
-                customerAndDoorDto = pickDetailRepositoryMock.getCustomerAndDoorDto(INid);
+                CustomerAndDoorDto customerAndDoorDtoFromDb = pickDetailRepositoryMock.getCustomerAndDoorDto(INid);
+                customerAndDoorDto.setConsigneeKey(customerAndDoorDtoFromDb.getConsigneeKey());
+                customerAndDoorDto.setHeaderDoor(customerAndDoorDtoFromDb.getHeaderDoor());
             }
         } else {
             //Okay, we are dealing with a DropID
@@ -118,7 +117,7 @@ public class RFMoveFlowThroughQP1S1 {
             //Start with the last used detail (ie. the 'ORDER BY').
             dropIdObject = dropIdRepositoryMock.getAllByDropIdOrderDesc(INid);
 
-            boolean isFound = false;
+            AtomicBoolean isFound = new AtomicBoolean(false);
 
             for (DropIdInfo item : dropIdObject) {
                 switch (item.getIdType()) {
@@ -130,24 +129,19 @@ public class RFMoveFlowThroughQP1S1 {
 
                         //If just one PICK for the CaseID (eg. pallet pick, non-cartonized pick), then just retrieve all the details.
                         if (caseIdRowCount == 1) {
-                            String loc = " ";
+                            AtomicReference<String> loc = new AtomicReference<>(" ");
 
                             Optional<PickDetailDto> optionalOfPickDetailDto = pickDetailRepositoryMock.getAllPickDetails(item.getChildId());
-                            if (optionalOfPickDetailDto.isPresent()) {
-                                PickDetailDto pickDetailDto = optionalOfPickDetailDto.get();
+                            optionalOfPickDetailDto.ifPresent(pickDetailDto -> {
                                 updateResult(result, pickDetailDto);
                                 customerAndDoorDto.setConsigneeKey(pickDetailDto.getConsigneeKey());
                                 customerAndDoorDto.setHeaderDoor(pickDetailDto.getHeaderDoor());
-                                loc = pickDetailDto.getLoc();
-                                isFound = true;
-                            }
+                                loc.set(pickDetailDto.getLoc());
+                                isFound.set(true);
+                            });
 
-                            //If we haven't moved this Pick yet, set fromloc = PickLoc
-                            if (item.getDropLoc().equals(" ") || item.getDropLoc().equals("")) {
-                                result.setFromLoc(loc);
-                            } else {
-                                result.setFromLoc(item.getDropLoc());
-                            }
+                            //If we haven't moved this Pick yet, set fromLoc = PickLoc
+                            result.setFromLoc((item.getDropLoc().equals(" ") || item.getDropLoc().equals("")) ? loc.get() : item.getDropLoc());
 
                             //If we have more than one PICK for the CaseID, we need to get a little more involved
                         } else if (caseIdRowCount > 1) {
@@ -159,36 +153,35 @@ public class RFMoveFlowThroughQP1S1 {
                             else result.setFromLoc(item.getDropLoc());
 
                             //Retrieve Customer and Door fields from header - used later to find lane
-                            customerAndDoorDto = pickDetailRepositoryMock.getCustomerAndDoorDto(item.getChildId());
+                            CustomerAndDoorDto customerAndDoorDtoFromDb = pickDetailRepositoryMock.getCustomerAndDoorDto(item.getChildId());
+                            customerAndDoorDto.setConsigneeKey(customerAndDoorDtoFromDb.getConsigneeKey());
+                            customerAndDoorDto.setHeaderDoor(customerAndDoorDtoFromDb.getHeaderDoor());
+
                         }
                     }
                     case "2" -> {
                         Optional<XPickDetailDto> optionalOfxPickDetailDto = xPickDetailRepositoryMock.getAllXPickDetails(item.getChildId());
-                        if (optionalOfxPickDetailDto.isPresent()) {
-                            XPickDetailDto xPickDetailDto = optionalOfxPickDetailDto.get();
+                        optionalOfxPickDetailDto.ifPresent(xPickDetailDto -> {
                             updateResult(result, xPickDetailDto);
-
                             customerAndDoorDto.setConsigneeKey(xPickDetailDto.getConsigneeKey());
-                            isFound = true;
-                        }
+                            isFound.set(true);
+                        });
                         result.setFromLoc(item.getDropLoc());
                     }
                     case "3" -> {
                         Optional<TransshipDto> optionalOfTransshipDto = transshipRepositoryMock.getTransshipDetails(item.getChildId());
-                        if (optionalOfTransshipDto.isPresent()) {
-                            TransshipDto transshipDto = optionalOfTransshipDto.get();
+                        optionalOfTransshipDto.ifPresent(transshipDto -> {
                             result.setQty(transshipDto.getQty());
                             customerAndDoorDto.setConsigneeKey(transshipDto.getConsigneeKey());
-
-                            isFound = true;
-                        }
+                            isFound.set(true);
+                        });
                         result.setFromLoc(item.getDropLoc());
                     }
                     case "4" -> {
                         //there should be no dropid's be
                     }
                 }
-                if (isFound) break;
+                if (isFound.get()) break;
             }
 
         }
@@ -262,7 +255,7 @@ public class RFMoveFlowThroughQP1S1 {
         if (!exeDataObject.getResultMessage().equals("NODROPID")) {
             //theCurrentDo.getstring('userid', userid);
             userId = "1";
-            logger.info(movableUnit + ", MV," + exeDataObject.getFromLoc() + ", " + exeDataObject.getToLoc() + ", " + userId + result.getMovLogKey());
+            logger.info("{}, MV,{}, {}, {}{}", movableUnit, exeDataObject.getFromLoc(), exeDataObject.getToLoc(), userId, result.getMovLogKey());
             result.setToTag(exeDataObject.getToTag());
             result.setFromLoc(exeDataObject.getFromLoc());
             result.setToLoc(exeDataObject.getToLoc());
